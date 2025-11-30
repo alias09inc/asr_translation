@@ -11,6 +11,7 @@ dependencies = [
     "torchvision == 0.23.0+cu128; platform_system == 'Linux'",
     "torch == 2.8.0; platform_system == 'Darwin'",
     "torchvision == 0.23.0; platform_system == 'Darwin'",
+    "nemo>=7.2.5",
 ]
 
 [dependency-groups]
