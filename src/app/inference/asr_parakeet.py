@@ -1,69 +1,128 @@
-from pathlib import Path
-import torch
-import soundfile as sf
-from transformers import AutoProcessor, AutoModelForCTC
+from __future__ import annotations
+
+from typing import Any, Dict, Tuple, Union
 
 from .base import BaseModel
 
-PROJECT_ROOT = Path(__file__).reslove().parents[3]
-ASR_DIR = PROJECT_ROOT / "models" / "parakeet-0.6b"
-
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-
+try:
+	import nemo.collections.asr as nemo_asr  # type: ignore[import]
+except Exception:  # pragma: no cover
+	# If nemo is not installed, set a sentinel to avoid import errors.
+	nemo_asr = None  # type: ignore[assignment]
 
 class ParakeetASR(BaseModel):
     """
-    英語 ASRのラッパ
+    Multilingual ASR: nvidia/parakeet-tdt-0.6b-v3 のラッパ
+
+    - 16kHz モノラルの .wav / .flac を想定（NeMo 側の仕様に準拠）
+    - 言語自動判定 + 句読点付きテキストを返す
+    - timestamps=True の場合は NeMo の timestamp 情報も返す
     """
 
-    def __init__(self) -> None:
-        self.processor = None
-        self.model = None
+    def __init__(
+        self,
+        model_name: str = "nvidia/parakeet-tdt-0.6b-v3",
+        device: str | None = None,
+    ) -> None:
+        """
+        Parameters
+        ----------
+        model_name:
+            Hugging Face / NGC のモデル名。
+            デフォルトは parakeet-tdt-0.6b-v3。
+        device:
+            例: "cuda", "cpu"。
+            None の場合は NeMo のデフォルト挙動に任せる。
+        """
+        self.model_name = model_name
+        self.device = device
+        self._model: nemo_asr.models.ASRModel | None = None
 
-    def load(self):
-        if self.model is not None:
+    # BaseModel のインターフェイス
+    def load(self) -> None:
+        """
+        NeMo ASRModel を遅延ロードする。
+        - すでにロード済みなら何もしない。
+        """
+        if self._model is not None:
             return
 
-        model_id = str(ASR_DIR) if ASR_DIR.exists() else "nvidia/parakeet-ctc-0.6b"
-
-        self.processor = AutoProcessor.from_pretrained(model_id)
-        self.model = AutoModelForCTC.from_pretrained(
-            model_id,
-            torch_dtype="auto",
-            device_map="auto",
+        # HF から自動ダウンロード（ローカルキャッシュも利用される）
+        self._model = nemo_asr.models.ASRModel.from_pretrained(
+            model_name=self.model_name
         )
 
-    def _prepare_inputs(self, audio_path: str):
+        if self.device is not None:
+            # NeMo モデルも .to(device) が使える（内部は PyTorch Lightning モジュール）
+            self._model = self._model.to(self.device)
+
+        # ここで self._model.transcribe(...) が使える状態になる
+
+    def _call_transcribe(
+        self,
+        audio_path: str,
+        timestamps: bool,
+    ) -> Any:
+        """
+        NeMo の transcribe を呼ぶラッパ。
+        返り値は NeMo の ASRResult / str などバージョン依存なので、
+        infer() 側で型を吸収する。
+        """
         self.load()
+        assert self._model is not None
 
-        audio, sr = sf.read(audio_path)
-        target_sr = self.processor.feature_extractor.sampling_rate
-
-        if sr != target_sr:
-            raise ValueError(f"Parakeet expects {target_sr} Hz, got {sr}")
-
-        if audio.ndim == 2:
-            # stereo -> mono
-            audio = audio.mean(axis=1)
-
-        inputs = self.processor(
-            audio,
-            sampling_rate=target_sr,
-            return_tensors="pt",
+        # parakeet-tdt-0.6b 系の公式コードと同じ呼び方 
+        outputs = self._model.transcribe(
+            [audio_path],
+            timestamps=timestamps,
         )
+        return outputs
 
-        inputs = {k: v.to(self.model.device) for k, v in inputs.items()}
-        return inputs
-
-    def infer(self, audio_path: str) -> str:
+    def infer(
+        self,
+        audio_path: str,
+        *,
+        timestamps: bool = False,
+    ) -> Union[str, Tuple[str, Dict[str, Any] | None]]:
         """
-        audio_path: 16kHz mono wav
-        return: 認識した英語テキスト
-        """
-        inputs = self._prepare_inputs(audio_path)
+        audio_path の音声を文字起こしする。
 
-        with torch.no_grad():
-            logits = self.model(**inputs).logits
-        predicted_ids = torch.argmax(logits, dim=-1)
-        text = self.processor.batch_decode(predicted_ids)[0]
-        return text.strip()
+        Parameters
+        ----------
+        audio_path:
+            16kHz mono の .wav / .flac ファイルパスを想定。
+        timestamps:
+            True の場合、(text, timestamp_dict) を返す。
+            False の場合、text のみを返す。
+
+        Returns
+        -------
+        text or (text, timestamp_dict)
+        """
+        outputs = self._call_transcribe(audio_path, timestamps=timestamps)
+
+        if not outputs:
+            # 何も返ってこなかった場合の保険
+            return ("", None) if timestamps else ""
+
+        first = outputs[0]
+
+        # パターン1: NeMo 新 API (ASRResult オブジェクト)
+        #   - first.text でテキスト
+        #   - first.timestamp["word"/"segment"/"char"] でタイムスタンプ
+        if hasattr(first, "text"):
+            text = first.text
+            ts = getattr(first, "timestamp", None)
+            if timestamps:
+                # ts は None か、"word"/"segment"/"char" を持つ dict と想定
+                return text, ts
+            else:
+                return text
+
+        # パターン2: 古い NeMo では transcribe() が単純な str を返すケース
+        if isinstance(first, str):
+            return (first, None) if timestamps else first
+
+        # パターン3: 予期しない型（念のため文字列化）
+        text = str(first)
+        return (text, None) if timestamps else text
