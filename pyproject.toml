@@ -3,30 +3,29 @@ name = "asr-translatation"
 version = "0.1.0"
 description = "Automatic Speech RecognitionしてMachine Translationします"
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = "==3.11"
 dependencies = [
     "soundfile>=0.13.1",
     "transformers>=4.57.3",
-    "torch == 2.8.0+cu128; platform_system == 'Linux'",
-    "torchvision == 0.23.0+cu128; platform_system == 'Linux'",
-    "torch == 2.8.0; platform_system == 'Darwin'",
-    "torchvision == 0.23.0; platform_system == 'Darwin'",
+    "torch == 2.3.0+cu121; platform_system == 'Linux'",
+    "torch == 2.3.0; platform_system == 'Darwin'",
     "nemo>=7.2.5",
     "onnx>=1.19.1",
     "nemo-toolkit[asr]>=2.1.0",
+    "numpy<2.0",
 ]
 
 [dependency-groups]
-dev = [
-    "poethepoet>=0.38.0",
-]
+dev = ["poethepoet>=0.38.0"]
 
 
 [tool.uv.sources]
-torch = [{ index = "pytorch-cu128", marker = "platform_system == 'Linux'" }]
-torchvision = [{ index = "pytorch-cu128", marker = "platform_system == 'Linux'" }]
+torch = [{ index = "pytorch-cu121", marker = "platform_system == 'Linux'" }]
+torchvision = [
+    { index = "pytorch-cu121", marker = "platform_system == 'Linux'" },
+]
 
 [[tool.uv.index]]
 name = "pytorch-cu128"
-url = "https://download.pytorch.org/whl/cu128"
+url = "https://download.pytorch.org/whl/cu121"
 explicit = true
